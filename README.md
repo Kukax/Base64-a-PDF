@@ -18,7 +18,7 @@ Página extremadamente simple para convertir código Base64 a PDF. 100% en el na
 - Validación básica de Base64
 - Funciona offline
 
-## Demo
+## Instalación
 
 Solo abre `index.html`. No requiere instalación ni build.
 
