@@ -80,13 +80,26 @@ const $items = document.getElementById('items');
 const $tpl = document.getElementById('tpl-item');
 let contador = 0;
 
-function base64ToBlob(base64) {
+async function base64ToBlobChunked(base64, onProgress) {
   const clean = base64.trim().replace(/\s/g, '').replace(/^data:.*;base64,/, '');
   if (!clean) throw new Error('El campo está vacío.');
-  if (!/^[A-Za-z0-9+/=]+$/.test(clean)) throw new Error('Base64 no válido.');
-  const binary = atob(clean);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  if (clean.length % 4 !== 0) throw new Error('Base64 no válido (longitud no múltiplo de 4).');
+  // validación rápida sin regex gigante: si contiene caracteres fuera de base64, falla atob igual
+  const padding = clean.endsWith('==') ? 2 : clean.endsWith('=') ? 1 : 0;
+  const decodedLen = (clean.length * 3) / 4 - padding;
+  const bytes = new Uint8Array(decodedLen);
+  const chunkSize = 32768; // múltiplo de 4, ~24KB decodificados por chunk
+  let offset = 0;
+  for (let i = 0; i < clean.length; i += chunkSize) {
+    const chunk = clean.slice(i, i + chunkSize);
+    // atob es síncrono pero por chunk es mucho más rápido y no bloquea 10s seguidos
+    let binary;
+    try { binary = atob(chunk); } catch { throw new Error('Base64 no válido (caracteres inválidos).'); }
+    for (let j = 0; j < binary.length; j++) bytes[offset++] = binary.charCodeAt(j);
+    if (onProgress) onProgress(Math.min(i + chunkSize, clean.length), clean.length);
+    // ceder al event loop cada ~8 chunks para no congelar UI/preview
+    if (i % (chunkSize * 8) === 0) await new Promise(r => setTimeout(r, 0));
+  }
   return new Blob([bytes], { type: 'application/pdf' });
 }
 
@@ -113,10 +126,16 @@ function crearItem() {
     $msg.className = 'msg ' + (type || '');
   }
 
-  function convertir() {
+  async function convertir() {
+    $btnConvertir.disabled = true;
+    $btnConvertir.textContent = 'Convirtiendo...';
+    setMsg('Decodificando...', '');
     try {
       if (pdfUrl) URL.revokeObjectURL(pdfUrl);
-      const blob = base64ToBlob($textarea.value);
+      const blob = await base64ToBlobChunked($textarea.value, (done, total) => {
+        const pct = Math.round((done / total) * 100);
+        setMsg(`Decodificando ${pct}%...`, '');
+      });
       pdfUrl = URL.createObjectURL(blob);
       $preview.src = pdfUrl;
       $preview.style.display = 'block';
@@ -128,12 +147,15 @@ function crearItem() {
       $preview.style.display = 'none';
       $btnDescargar.style.display = 'none';
       return false;
+    } finally {
+      $btnConvertir.disabled = false;
+      $btnConvertir.textContent = 'Convertir a PDF';
     }
   }
 
-  function descargar() {
+  async function descargar() {
     if (!pdfUrl) {
-      const ok = convertir();
+      const ok = await convertir();
       if (!ok) return;
     }
     const a = document.createElement('a');
@@ -169,11 +191,11 @@ function crearItem() {
 
 // acciones globales
 document.getElementById('btnAgregar').addEventListener('click', crearItem);
-document.getElementById('btnConvertirTodos').addEventListener('click', () => {
-  [...$items.children].forEach(el => el._convertir && el._convertir());
+document.getElementById('btnConvertirTodos').addEventListener('click', async () => {
+  for (const el of [...$items.children]) if (el._convertir) await el._convertir();
 });
-document.getElementById('btnDescargarTodos').addEventListener('click', () => {
-  [...$items.children].forEach(el => el._descargar && el._descargar());
+document.getElementById('btnDescargarTodos').addEventListener('click', async () => {
+  for (const el of [...$items.children]) if (el._descargar) await el._descargar();
 });
 
 // iniciar con 1 + ejemplo de segundo vacío para demostrar
